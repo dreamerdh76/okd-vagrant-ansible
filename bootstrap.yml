@@ -1,0 +1,146 @@
+---
+- name: Preparar host Ubuntu 22.04+ para laboratorio OKD
+  hosts: localhost
+  connection: local
+  become: true
+
+  vars:
+    vagrant_ver: "2.4.5"
+    vbox_pkg:    "virtualbox-7.1"        # apt instalará 7.1.8+
+    vbox_repo:   "jammy"                 # adapta si usas 24.04 (noble)
+
+  tasks:
+  # - name: Actualizar cache apt
+  #   apt:
+  #     update_cache: yes
+  #     cache_valid_time: 3600
+
+  - name: Instalar dependencias básicas (con progreso)
+    shell: |
+      DEBIAN_FRONTEND=noninteractive \
+      apt-get install -y \
+        git curl wget python3-pip build-essential dkms linux-headers-generic \
+        -o Dpkg::Progress-Fancy=1
+    args:
+      chdir: "{{ playbook_dir }}"
+  # ---------- Prerrequisitos para gestión GPG ----------
+  - name: Instalar gnupg (para de-armor)
+    apt:
+      name: gnupg
+      state: present
+      update_cache: yes
+
+  # ---------- Limpiar repositorio HashiCorp previo, si existe ----------
+  - name: Eliminar repositorio HashiCorp mal formado (si existe)
+    file:
+      path: /etc/apt/sources.list.d/hashicorp.list
+      state: absent
+
+  - name: Eliminar keyring HashiCorp anterior (si existe)
+    file:
+      path: /usr/share/keyrings/hashicorp-archive-keyring.gpg
+      state: absent
+
+  # ---------- Clave HashiCorp ----------
+  - name: Descargar clave HashiCorp (ASCII)
+    get_url:
+      url: https://apt.releases.hashicorp.com/gpg
+      dest: /tmp/hashicorp.asc
+      mode: "0644"
+
+  - name: Convertir clave ASCII a keyring binario
+    command: >
+      gpg --dearmor
+      --output /usr/share/keyrings/hashicorp-archive-keyring.gpg
+      /tmp/hashicorp.asc
+    args:
+      creates: /usr/share/keyrings/hashicorp-archive-keyring.gpg
+
+  # ---------- Determinar arquitectura y versión ----------
+  - name: Definir facts para el repo HashiCorp
+    set_fact:
+      repo_arch: "{{ 'amd64' if ansible_architecture in ['x86_64', 'amd64'] else ansible_architecture }}"
+      repo_suite: "{{ ansible_distribution_release | lower }}"
+
+  # ---------- Añadir repositorio HashiCorp ----------
+  - name: Registrar repositorio HashiCorp firmado
+    apt_repository:
+      repo: >
+        deb [arch={{ repo_arch }} signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg]
+        https://apt.releases.hashicorp.com {{ repo_suite }} main
+      filename: hashicorp
+      state: present
+
+  # ---------- Actualizar e instalar Vagrant ----------
+  - name: Actualizar caché de apt
+    apt:
+      update_cache: yes
+
+  - name: Instalar Vagrant {{ vagrant_ver }}
+    apt:
+      name: "vagrant={{ vagrant_ver }}*"
+      state: present
+
+
+
+  # ---------- Traer libvpx7 desde Jammy (pin bajo) ----------
+  - name: Crear pin de prioridad 100 para paquetes Jammy
+    copy:
+      dest: /etc/apt/preferences.d/jammy-pin
+      content: |
+        Package: *
+        Pin: release n=jammy
+        Pin-Priority: 100
+
+  - name: Añadir repositorio Jammy main+universe
+    apt_repository:
+      repo: "deb http://archive.ubuntu.com/ubuntu jammy main universe"
+      filename: ubuntu-jammy
+      state: present
+
+  # ---------- VirtualBox 7.0 ----------
+  - name: Importar clave Oracle
+    apt_key:
+      url: https://www.virtualbox.org/download/oracle_vbox_2016.asc
+      state: present
+
+  - name: Añadir repo Oracle VirtualBox (paquetes jammy)
+    apt_repository:
+      repo: "deb [arch=amd64] https://download.virtualbox.org/virtualbox/debian {{ vbox_repo }} contrib"
+      filename: oracle-vbox
+      state: present
+
+  # ---------- Instalar libvpx7 + VirtualBox 7.0 (sin versión fijada) ----------
+  - name: Instalar libvpx7 y VirtualBox 7.0
+    apt:
+      name:
+        - libvpx7          # vendrá de Jammy
+        - virtualbox-7.0   # APT elegirá el build más reciente de 7.0
+      state: present
+      update_cache: yes
+    register: vb_result
+    retries: 3         # por si el CDN se corta
+    delay: 30
+    until: vb_result is succeeded
+
+
+  # ---------- Submódulos y clúster ----------
+  - name: Inicializar submódulos git
+    command: git submodule update --init --recursive
+    args:
+      chdir: "{{ playbook_dir }}"
+
+  - name: Levantar Vagrant (crea VMs)
+    command: vagrant up
+    args:
+      chdir: "{{ playbook_dir }}"
+
+  - name: Ejecutar prerequisitos OKD
+    command: ansible-playbook playbooks/prereq-wrapper.yml
+    args:
+      chdir: "{{ playbook_dir }}"
+
+  - name: Desplegar clúster OKD
+    command: ansible-playbook playbooks/deploy-wrapper.yml
+    args:
+      chdir: "{{ playbook_dir }}"

@@ -1,0 +1,6 @@
+# Vagrant
+.vagrant/
+# Macros, logs, temporales
+*.log
+*.swp
+ansible/openshift-ansible/.git/

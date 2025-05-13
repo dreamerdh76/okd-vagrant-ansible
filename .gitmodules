@@ -1,0 +1,8 @@
+[submodule "ansible/openshift-ansible"]
+	path = ansible/openshift-ansible
+	url = https://github.com/openshift/openshift-ansible.git
+	branch = release-3.11
+[submodule "openshift-ansible"]
+	path = openshift-ansible
+	url = https://github.com/openshift/openshift-ansible.git
+	branch = release-3.11
